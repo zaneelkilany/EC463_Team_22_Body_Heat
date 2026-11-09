@@ -75,7 +75,7 @@ and adjust before defending in the logbook**:
 | `RISE_LATEST_S` | 100 | Allow 85 s from the labeled rise, including warmup and sampling |
 | `ABSOLUTE_LATEST_S` | 150 | Expect absolute-limit detection before the plateau |
 | `RESUME_LATEST_S` | 200 | Allow 30 s after the labeled plateau, including recovery |
-| `MODEL_CANDIDATE` | `qwen/qwen3.5-9b` | Requested candidate; confirm actual provider route before use |
+| `MODEL_CANDIDATE` | `qwen/qwen3.5-9b` | Candidate route is unverified; confirm actual provider route before use |
 | `TIMEOUT_S` | 30 s | Bound blocking provider requests; no automatic retries |
 
 The 200-second recording duration and fixed seed 0 preserve the supplied
