@@ -340,3 +340,47 @@ def test_rebroadcast_does_not_call_even_when_cadence_is_due():
     assert analyzer.windows.last["pod-11"] == 60
     analyzer.ingest(packet(61), 61)
     assert analyzer.client.calls == 2
+
+
+def test_rolling_recovery_uses_observed_span_not_an_extra_call():
+    analyzer = model.LLMAnalyzer(variant="rolling")
+    for t in range(181):
+        flags = analyzer.ingest(packet(t, 39 if t < 170 else 37), t)
+    assert [f.kind for f in flags] == ["resume"]
+    assert analyzer.client.calls == 7
+
+
+def test_default_budgets_cover_scenario_cadence_with_headroom():
+    import math
+    opportunities = math.ceil(200 / model.SCORE_EVERY_S)
+    assert model.MAX_CALLS_PER_WEARER >= opportunities + 1
+    assert model.MAX_CALLS_SESSION >= 30 * (opportunities + 1)
+
+
+def test_demo_defaults_complete_all_paths_without_exhaustion(capsys):
+    import random
+    from body_heat_demo.engine import Engine, demo_roster
+    from analysis_scaffold.record import CaptureHub
+    from analysis_scaffold.analyzer import PodRelayAnalyzer
+    state = random.getstate()
+    try:
+        random.seed(0)
+        hub = CaptureHub()
+        engine = Engine(hub, store=None, roster=demo_roster(), autoplay=True)
+        engine.t = 0
+        for _ in range(200):
+            engine.step()
+    finally:
+        random.setstate(state)
+    assert len(hub.packets) == 5813
+    for analyzer in [PodRelayAnalyzer(), DeterministicAnalyzer(),
+                     model.LLMAnalyzer(variant="explain"), model.LLMAnalyzer(variant="rolling")]:
+        flags = []
+        for t, pkt in hub.packets:
+            flags.extend(analyzer.ingest(pkt, t))
+        result = score(flags)
+        assert result["missed_expected_events"] == 0
+        assert result["flags_in_negative_windows"] == 0
+        if isinstance(analyzer, model.LLMAnalyzer):
+            assert not analyzer.events
+            assert analyzer.client.calls <= model.MAX_CALLS_SESSION

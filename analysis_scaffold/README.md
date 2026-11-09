@@ -82,8 +82,8 @@ and adjust before defending in the logbook**:
 | `RECOVERY_S` | 10 s | Require a period below both settings before resume |
 | `MAX_GAP_S` | 20 s | Reset sample/recovery history after a stream gap |
 | `SCORE_EVERY_S` | 30 s | Minimum interval between attempts per wearer |
-| `MAX_CALLS_PER_WEARER` | 7 | Lifetime attempt cap per wearer within an analyzer session |
-| `MAX_CALLS_SESSION` | 40 | Hard total cap per analyzer session, including failed attempts |
+| `MAX_CALLS_PER_WEARER` | 8 | Seven cadence opportunities over 200s plus one headroom slot |
+| `MAX_CALLS_SESSION` | 240 | 30 scenario wearers multiplied by 8 attempts, including headroom |
 | `FAIL_COOLDOWN_S` | 60 s | After failure, wait for the first cadence slot at/after cooldown |
 | `DEFAULT_MODE` | explain or rolling | Branch convenience preset only; runtime override is supported |
 | `RISE_LATEST_S` | 100 | Allow 85 s from the labeled rise, including warmup and sampling |
@@ -132,19 +132,30 @@ corresponding underscore names. All accept nonnegative integers; zero cadence
 is an explicit opt-out for isolated tests, zero budget disables calls visibly.
 A call budget bounds attempts, not token count or financial cost per call.
 
+Budget sizing is an **implementation assumption by the coding agent, review
+and adjust before defending in the logbook**: the scenario has 30 wearers and
+200 session seconds. At 30s cadence there are `ceil(200 / 30) = 7` opportunities
+per wearer. One extra slot gives a per-wearer cap of 8; `30 * 8 = 240` gives the
+session cap. This intentionally prioritizes full demo coverage over the earlier
+sub-50-call exploration target. Smaller limits can still be selected through the
+CLI and are covered by exhaustion tests. Budgets are finite guardrails, not a
+claim that real token/compute cost is acceptable.
+
 Final offline verification on each branch recorded 5,813 packets and passed 29
-existing plus 53 package tests (82 total), with all package files parsing.
-With defaults, a full 200s rolling replay makes **at most 40 calls; measured 40**.
-Explain measured 3 calls; four-path replay therefore measured 43 fake calls total.
-Rolling exhausts the session budget at t=30 and misses all three positive
-expectations. The relay and deterministic baseline remain unchanged, and explain
-passes all positives. All three negative windows pass for every analyzer.
-Default `all` exits 1 to expose rolling's three misses and one exhausted-budget
-event; tests and AST parsing exit 0. Pass lines were not relaxed to conceal the
-tradeoff. Exact per-branch output, including measured local fake execution time,
-is pasted in the three PR descriptions. These numbers establish software
-plumbing only; real Qwen effectiveness, token usage, latency, and cost remain
-untested until an API key is supplied and real calls are explicitly enabled.
+existing plus 56 package tests (85 total), with all package files parsing.
+With defaults, a full 200s rolling replay makes **at most 240 calls; measured
+202**. Explain measured 3 calls; four-path replay measured 205 fake calls total.
+All positive expectations and all three negative windows PASS for all four
+analyzers, with zero budget exhaustion, zero unavailable-analysis events, and
+replay exit 0. Relay and deterministic flag timings remain unchanged. Rolling
+flags at t=60 (trend), t=90 (above limit), and t=180 (resume); explain retains
+t=40/90/180. Small-cap tests explicitly verify visible exhaustion and retained
+deterministic flags. A full scenario regression test verifies all four paths
+and zero exhausted budgets with the defaults. Exact per-branch output, including
+measured local fake execution time, is pasted in the three PR descriptions.
+These numbers establish software plumbing only; real Qwen effectiveness, token
+usage, latency, and cost remain untested until an API key is supplied and real
+calls are explicitly enabled.
 
 ## Model contracts, privacy, and failure semantics
 
@@ -167,8 +178,13 @@ claims of abnormality, or clinical directions.
 
 For deterministic-first explanations the deterministic event is authoritative;
 a contradictory explanation is a failure. Recovery uses the reviewed resume
-wording. For direct scoring a validated `none` starts the recovery period;
-a model-proposed `resume` cannot bypass that period. Any timeout, HTTP error,
+wording. For direct scoring, a validated `none` or `resume` must be backed by consecutive
+raw readings below both team settings in the supplied window. That observed span
+may satisfy the recovery period without requiring an extra paid call at a later
+cadence tick. A new flag, failure, or contact/gap reset invalidates earlier
+recovery evidence; a model-proposed `resume` cannot bypass the recovery period.
+This recovery evidence policy is an **implementation assumption by the coding
+agent, review and adjust before defending in the logbook**. Any timeout, HTTP error,
 malformed/non-JSON/schema failure, contradictory explanation, or mismatched
 evidence records an `analysis unavailable` event in `analyzer.events`. It never
 becomes a normal reading or a fabricated `flag: false`. Failure resets pending
