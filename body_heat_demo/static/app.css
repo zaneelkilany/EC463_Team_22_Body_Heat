@@ -278,3 +278,11 @@ table.list td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical
 .tour-card.center { animation: none; }
 @media (prefers-reduced-motion: reduce) { .tour-spot, .tour-card, .w-tile { transition: none; animation: none; } }
 .tour-spot.bare { box-shadow: 0 0 0 9999px rgba(10, 14, 20, .62); }
+
+.hub-analysis { border-top: 2px dashed #667; margin-top: .5rem; padding-top: .5rem; font-size: .8rem; }
+.analysis-notice { font-weight: bold; border: 2px solid currentColor; padding: .25rem; }
+/* Analysis copy must remain readable rather than clipping inside fixed tour-era tiles. */
+.screen:has(.grid .hub-analysis) { overflow: auto; }
+.grid:has(.hub-analysis) { height: auto; flex: none; grid-template-rows: none; grid-auto-rows: minmax(260px, auto); }
+.tile:has(.hub-analysis) { min-height: min-content; justify-content: flex-start; gap: 5px; }
+.tile:has(.hub-analysis) .foot { margin-top: auto; }

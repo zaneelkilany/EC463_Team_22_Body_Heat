@@ -243,3 +243,10 @@ uses a strict JSON schema, and logs provider-reported token counts when present.
 No provider calls or paid usage have been made for verification. Local unit tests
 mock transport for the real request shape; this does not verify provider support.
 No pricing or cost estimates are invented.
+
+## Live web integration
+
+The local `body_heat_demo` app now uses this package directly on every accepted
+packet. Run `python3 -m body_heat_demo.server --analyzer deterministic` from the
+repo root; see [integrated demo instructions](../body_heat_demo/README.md#integrated-live-hub-analysis)
+for all four choices, explicit provider opt-in, staff visibility and standing labels.

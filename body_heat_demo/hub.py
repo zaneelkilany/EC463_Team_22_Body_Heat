@@ -24,8 +24,11 @@ REQUIRED_FIELDS = ("device_id", "session_id", "counter", "measurement_id", "skin
 
 
 class DemoHub(Hub):
-    def __init__(self, store, session_id="S-2026-10-22"):
+    def __init__(self, store, session_id="S-2026-10-22", analyzer=None):
         super().__init__()
+        self.analyzer = analyzer
+        self.analysis_flags = {}
+        self.analysis_notices = {}
         self.store = store
         self.session_id = session_id
         self.rejections = {"malformed": 0, "unknown": 0, "altered": 0, "no_consent": 0, "replayed": 0}
@@ -94,10 +97,34 @@ class DemoHub(Hub):
             self.low_battery[dev] = low
             self._event(t, "battery", dev, "low" if low else "ok")
 
+        self._analyze(packet, t)
+
         # storage second: never blocks alert forwarding
         if new_measurement:
             self._enqueue(("measurement", packet["measurement_id"], dev, dict(state.reading), t))
         return True
+
+    def _analyze(self, packet, t):
+        """Only reached after hub acceptance; failures never stop reception/storage."""
+        if self.analyzer is None:
+            return
+        dev = packet["device_id"]
+        events = getattr(self.analyzer, "events", [])
+        before = len(events)
+        try:
+            for flag in self.analyzer.ingest(dict(packet), t):
+                self.analysis_flags[flag.device_id] = {
+                    "t": flag.t, "kind": flag.kind, "message": flag.message}
+        except Exception:
+            # Never expose provider/exception text to the UI.
+            self.analysis_notices[dev] = {"t": t, "kind": "analysis unavailable",
+                                          "message": "analysis unavailable"}
+        for event in events[before:]:
+            if event["kind"] not in ("analysis unavailable", "budget_exhausted", "model_deferred"):
+                continue
+            targets = self._pods if event.get("scope") in ("session", "live_safety") else [event["device_id"]]
+            for target in targets:
+                self.analysis_notices[target] = {k: event[k] for k in ("t", "kind", "message")}
 
     def tick(self, t):
         """Once a second: no-signal detection (FR-005, 60-65 s window)."""
