@@ -31,9 +31,17 @@ SCORE_EVERY_S = 30  # minimum interval per wearer, in session seconds
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 TIMEOUT_S = 30
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
-MAX_CALLS_PER_WEARER = 8  # ceil(200 / 30) cadence opportunities + 1 headroom
+BUDGET_HEADROOM_TICKS = 1
+# Scenario facts from demo-prototype, not fitted to expected alert times.
+SCENARIO_WEARER_COUNT = 30
+SCENARIO_DURATION_S = 200
+CADENCE_TICKS = (SCENARIO_DURATION_S + SCORE_EVERY_S - 1) // SCORE_EVERY_S
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
-MAX_CALLS_SESSION = 240  # 30 scenario wearers * 8 attempts, including headroom
+MAX_CALLS_PER_WEARER = CADENCE_TICKS + BUDGET_HEADROOM_TICKS
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+MAX_CALLS_SESSION = SCENARIO_WEARER_COUNT * MAX_CALLS_PER_WEARER
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+LIVE_SAFETY_CEILING = 300  # independent hard ceiling; not exposed as a CLI override
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 FAIL_COOLDOWN_S = 60
 
@@ -121,6 +129,8 @@ class LLMClient:
         return envelope["choices"][0]["message"]["content"], *counts
 
     def complete(self, window):
+        if not self.fake and self.calls >= LIVE_SAFETY_CEILING:
+            raise RuntimeError("Live provider call safety ceiling exhausted")
         self.calls += 1
         started = time.perf_counter()
         log = {"t": window["readings"][-1]["t"], "device_id": window["device_id"],
@@ -232,7 +242,8 @@ class LLMAnalyzer(Analyzer):
                 self.events.append({"t": t, "device_id": dev, "kind": "model_deferred",
                                     "message": "Model explanation unavailable until the next eligible cadence slot."})
             return stage_flags
-        scope = ("session" if self.calls_session >= self.max_calls_session else
+        scope = ("live_safety" if not self.client.fake and self.client.calls >= LIVE_SAFETY_CEILING else
+                 "session" if self.calls_session >= self.max_calls_session else
                  "wearer" if self.calls_by_wearer.get(dev, 0) >= self.max_calls_per_wearer else None)
         if scope:
             notice = (scope, dev if scope == "wearer" else None)
