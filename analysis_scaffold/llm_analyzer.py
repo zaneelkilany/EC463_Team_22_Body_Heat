@@ -16,6 +16,7 @@ import os
 import time
 import urllib.request
 
+from . import DEFAULT_MODE
 from .analyzer import Analyzer, Flag
 from .deterministic_analyzer import (
     DeterministicAnalyzer, ReadingWindows, Transitions, WINDOW_S, RECOVERY_S,
@@ -26,10 +27,15 @@ PROVIDER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 MODEL_CANDIDATE = "qwen/qwen3.5-9b"  # candidate route must be confirmed before real use
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
-SCORE_EVERY_S = 0  # score each new broadcast packet per wearer, including rebroadcasts
+SCORE_EVERY_S = 30  # minimum interval per wearer, in session seconds
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 TIMEOUT_S = 30
-VARIANT = "explain"
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+MAX_CALLS_PER_WEARER = 7
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+MAX_CALLS_SESSION = 40
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+FAIL_COOLDOWN_S = 60
 
 # Constrain explanations to reviewed C-05 templates rather than exposing arbitrary
 # provider prose to staff. The model selects an explanation from window evidence.
@@ -162,9 +168,18 @@ class FakeLLMClient(LLMClient):
 class LLMAnalyzer(Analyzer):
     """This branch's model variant; default client is always offline."""
     def __init__(self, client=None, window_s=WINDOW_S, recovery_s=RECOVERY_S,
-                 score_every_s=SCORE_EVERY_S):
-        if score_every_s < 0:
-            raise ValueError("score_every_s must be nonnegative")
+                 score_every_s=SCORE_EVERY_S, variant=None,
+                 max_calls_per_wearer=MAX_CALLS_PER_WEARER,
+                 max_calls_session=MAX_CALLS_SESSION, fail_cooldown_s=FAIL_COOLDOWN_S):
+        self.variant = DEFAULT_MODE if variant is None else variant
+        if self.variant not in ("explain", "rolling"):
+            raise ValueError("variant must be explain or rolling")
+        for name, value in (("score_every_s", score_every_s),
+                            ("max_calls_per_wearer", max_calls_per_wearer),
+                            ("max_calls_session", max_calls_session),
+                            ("fail_cooldown_s", fail_cooldown_s)):
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
         self.client = client if client is not None else FakeLLMClient()
         self.window_s = window_s
         self.score_every_s = score_every_s
@@ -172,24 +187,55 @@ class LLMAnalyzer(Analyzer):
         self.stage = DeterministicAnalyzer(window_s, recovery_s)
         self.transitions = Transitions(recovery_s)
         self.last_score = {}
+        self.calls_by_wearer = {}
+        self.calls_session = 0
+        self.max_calls_per_wearer = max_calls_per_wearer
+        self.max_calls_session = max_calls_session
+        self.fail_cooldown_s = fail_cooldown_s
+        self.cooldown_until = {}
+        self.budget_notices = set()
         self.events = []
-        self.name = f"llm-{VARIANT} ({'FAKE offline plumbing only' if self.client.fake else 'real provider'})"
+        self.name = f"llm-{self.variant} ({'FAKE offline plumbing only' if self.client.fake else 'real provider'})"
 
     def ingest(self, pkt, t):
         dev = pkt["device_id"]
         previous = self.windows.last.get(dev)
         if pkt.get("skin_contact") is not True or (previous is not None and t - previous > MAX_GAP_S):
             self.transitions.reset(dev)
-            self.last_score.pop(dev, None)
+            # Contact changes and gaps never reset cadence, cooldown, or budgets.
         window = self.windows.add(pkt, t)
-        stage_flags = self.stage.ingest(pkt, t) if VARIANT == "explain" else []
+        stage_flags = self.stage.ingest(pkt, t) if self.variant == "explain" else []
         if not window or not window["readings"]:
             return []
-        if VARIANT == "explain" and not stage_flags:
+        if self.variant == "explain" and not stage_flags:
             return []
-        if VARIANT == "rolling" and t - self.last_score.get(dev, -float("inf")) < self.score_every_s:
-            return []
+        # No calls on rebroadcasts between cadence ticks; windows still update.
+        last = self.last_score.get(dev)
+        due = -float("inf") if last is None else last + self.score_every_s
+        cooldown = self.cooldown_until.get(dev, -float("inf"))
+        if last is not None and self.score_every_s and cooldown > due:
+            # First cadence slot at/after cooldown, not the next broadcast.
+            slots = (cooldown - last + self.score_every_s - 1) // self.score_every_s
+            due = last + slots * self.score_every_s
+        due = max(due, cooldown)
+        if t < due:
+            if stage_flags:
+                self.events.append({"t": t, "device_id": dev, "kind": "model_deferred",
+                                    "message": "Model explanation unavailable until the next eligible cadence slot."})
+            return stage_flags
+        scope = ("session" if self.calls_session >= self.max_calls_session else
+                 "wearer" if self.calls_by_wearer.get(dev, 0) >= self.max_calls_per_wearer else None)
+        if scope:
+            notice = (scope, dev if scope == "wearer" else None)
+            if notice not in self.budget_notices:
+                self.budget_notices.add(notice)
+                self.events.append({"t": t, "device_id": dev, "kind": "budget_exhausted",
+                                    "scope": scope, "message": "Model analysis unavailable: call budget exhausted."})
+            self.transitions.below_since.pop(dev, None)
+            return stage_flags
         self.last_score[dev] = t
+        self.calls_session += 1
+        self.calls_by_wearer[dev] = self.calls_by_wearer.get(dev, 0) + 1
         log_count = len(self.client.logs)
         try:
             result = validate_response(self.client.complete(window))
@@ -198,7 +244,7 @@ class LLMAnalyzer(Analyzer):
             if (evidence["latest_skin_c"] != latest["skin_c"] or
                     evidence["slope_c_per_5min"] != latest["slope_c_per_5min"]):
                 raise ValueError("response evidence does not match supplied readings")
-            if VARIANT == "explain":
+            if self.variant == "explain":
                 # Deterministic flags remain authoritative even if explanation fails.
                 event = stage_flags[0].kind
                 if result["kind"] not in (("none", "resume") if event == "resume" else (event,)):
@@ -213,6 +259,7 @@ class LLMAnalyzer(Analyzer):
             self.events.append({"t": t, "device_id": dev, "kind": "analysis unavailable",
                                 "message": "analysis unavailable", "error_type": type(exc).__name__})
             self.transitions.below_since.pop(dev, None)
+            self.cooldown_until[dev] = t + self.fail_cooldown_s
             return stage_flags  # direct scoring has no stage flags; never means a normal reading
         finally:
             if len(self.client.logs) > log_count:
