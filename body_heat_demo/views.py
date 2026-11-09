@@ -70,8 +70,8 @@ FORBIDDEN_WORDS = sorted(set(_F1_FORBIDDEN) | {
 # Plain-language next step per state, for staff (coach, trainer, crew
 # supervisor). Wellness wording only: practical actions, no clinical direction.
 STAFF_GUIDANCE = {
-    "absolute": "Check in with them now and help them cool down.",
-    "trend": "Keep an eye on them and plan a break soon.",
+    "absolute": "Readings are above the team-set limit; staff review requested.",
+    "trend": "Readings show a trend above the team-set limit; staff review requested.",
     "no_signal": "Check the pod is switched on and within range of this screen.",
     "detached": "Check the pod strap is snug against the skin.",
     "low_battery": "Swap the batteries at the next break.",
@@ -80,8 +80,8 @@ STAFF_GUIDANCE = {
 }
 # Same, written to the wearer.
 WEARER_GUIDANCE = {
-    "absolute": "Take a break and cool down. Your staff can see this too.",
-    "trend": "Your temperature is climbing quickly. Consider a break soon.",
+    "absolute": "Your readings are above the team-set limit. Your staff can see this too.",
+    "trend": "Your readings are rising faster than the team-set limit. Your staff can see this too.",
     "no_signal": "Your pod is not reaching the sideline screen. Check it is switched on.",
     "detached": "Your pod may have slipped. Snug the strap against your skin.",
     "low_battery": "Swap your pod batteries at the next break.",
@@ -179,7 +179,9 @@ def build_tile(hub, member, t, *, staff=True):
             "label": "Hub analysis",
             "flag": hub.analysis_flags.get(dev),
             "notice": hub.analysis_notices.get(dev),
-            "status": "Awaiting analysis output" if dev not in hub.analysis_flags else "Latest analysis flag",
+            "status": ("Latest analysis flag" if dev in hub.analysis_flags else
+                       "Analysis unavailable" if dev in hub.analysis_notices else
+                       "Awaiting analysis output"),
         }
     return tile
 

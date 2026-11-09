@@ -61,7 +61,10 @@ def test_budget_visibly_surfaces(scope):
     hub.analyzer = LLMAnalyzer(variant='rolling', **{f'max_calls_{"per_wearer" if scope == "wearer" else "session"}': 0})
     engine.step()
     for m in roster[:-1]:
-        notice = views.build_tile(hub, m, engine.t)['hub_analysis']['notice']
+        analysis = views.build_tile(hub, m, engine.t)['hub_analysis']
+        assert analysis['flag'] is None
+        assert analysis['status'] == 'Analysis unavailable'
+        notice = analysis['notice']
         assert notice['kind'] == 'budget_exhausted'
         assert notice['message'] == 'Model analysis unavailable: call budget exhausted.'
 
@@ -76,6 +79,7 @@ def test_unavailable_never_looks_like_ok():
     a = views.build_tile(hub, roster[0], engine.t)['hub_analysis']
     assert a['notice'] == {'t': 0, 'kind': 'analysis unavailable', 'message': 'analysis unavailable'}
     assert a['flag'] is None
+    assert a['status'] == 'Analysis unavailable'
 
 
 def test_relay_prior_payload():
@@ -107,6 +111,36 @@ def test_athlete_json_and_sse_have_no_analysis():
         with pytest.raises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(req)
         assert e.value.code == 403
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_analysis_status_wording_and_flag_precedence():
+    _, hub, _, roster, _ = build_demo(seed_history=False)
+    member = roster[0]
+    dev = member['device_id']
+    assert views.build_tile(hub, member, 0)['hub_analysis']['status'] == 'Awaiting analysis output'
+    hub.analysis_notices[dev] = {'t': 0, 'kind': 'analysis unavailable', 'message': 'analysis unavailable'}
+    hub.analysis_flags[dev] = {'t': 0, 'kind': 'trend', 'message': MESSAGES['trend']}
+    assert views.build_tile(hub, member, 0)['hub_analysis']['status'] == 'Latest analysis flag'
+
+
+def test_pod_guidance_exact_wording_served(monkeypatch):
+    store, hub, accounts, roster, engine = build_demo(seed_history=False)
+    monkeypatch.setattr(server, 'STATE', dict(store=store, hub=hub, accounts=accounts, roster=roster, engine=engine))
+    srv = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{srv.server_port}/api/strings', timeout=3) as response:
+            strings = json.load(response)['strings']
+        for guidance in [
+            'Readings are above the team-set limit; staff review requested.',
+            'Readings show a trend above the team-set limit; staff review requested.',
+            'Your readings are above the team-set limit. Your staff can see this too.',
+            'Your readings are rising faster than the team-set limit. Your staff can see this too.',
+        ]:
+            assert strings.count(guidance) == 1
     finally:
         srv.shutdown()
         srv.server_close()
