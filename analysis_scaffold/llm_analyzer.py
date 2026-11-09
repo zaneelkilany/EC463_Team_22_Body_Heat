@@ -31,9 +31,9 @@ SCORE_EVERY_S = 30  # minimum interval per wearer, in session seconds
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 TIMEOUT_S = 30
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
-MAX_CALLS_PER_WEARER = 7
+MAX_CALLS_PER_WEARER = 8  # ceil(200 / 30) cadence opportunities + 1 headroom
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
-MAX_CALLS_SESSION = 40
+MAX_CALLS_SESSION = 240  # 30 scenario wearers * 8 attempts, including headroom
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 FAIL_COOLDOWN_S = 60
 
@@ -193,6 +193,7 @@ class LLMAnalyzer(Analyzer):
         self.max_calls_session = max_calls_session
         self.fail_cooldown_s = fail_cooldown_s
         self.cooldown_until = {}
+        self.recovery_floor = {}
         self.budget_notices = set()
         self.events = []
         self.name = f"llm-{self.variant} ({'FAKE offline plumbing only' if self.client.fake else 'real provider'})"
@@ -204,6 +205,7 @@ class LLMAnalyzer(Analyzer):
         rebroadcast = mid is not None and mid == self.windows.ids.get(dev)
         if pkt.get("skin_contact") is not True or (previous is not None and t - previous > MAX_GAP_S):
             self.transitions.reset(dev)
+            self.recovery_floor[dev] = t
             # Contact changes and gaps never reset cadence, cooldown, or budgets.
         window = self.windows.add(pkt, t)
         stage_flags = self.stage.ingest(pkt, t) if self.variant == "explain" else []
@@ -259,6 +261,23 @@ class LLMAnalyzer(Analyzer):
                 reason = MESSAGES["resume"] if event == "resume" else result["reason"]
                 return [Flag(t, dev, event, reason)]
             kind = "none" if result["kind"] == "resume" else result["kind"]
+            if kind == "none":
+                # implementation assumption by the coding agent, review and adjust before defending in the logbook
+                # A validated model clearance needs consecutive raw window evidence
+                # below both settings. Use that observed span, not an extra paid call.
+                # Never carry recovery evidence across a failed call or new flag.
+                since = None
+                for reading in reversed(window["readings"]):
+                    if (reading["t"] <= self.recovery_floor.get(dev, -float("inf")) or
+                            reading_kind(reading, window["team_settings"]) != "none"):
+                        break
+                    since = reading["t"]
+                if since is None:
+                    self.transitions.below_since.pop(dev, None)
+                    return []
+                self.transitions.below_since[dev] = since
+            else:
+                self.recovery_floor[dev] = t
             event = self.transitions.update(dev, kind, t)
             return [Flag(t, dev, event, REASONS[event])] if event else []
         except Exception as exc:
@@ -267,6 +286,7 @@ class LLMAnalyzer(Analyzer):
                                 "message": "analysis unavailable", "error_type": type(exc).__name__})
             self.transitions.below_since.pop(dev, None)
             self.cooldown_until[dev] = t + self.fail_cooldown_s
+            self.recovery_floor[dev] = t
             return stage_flags  # direct scoring has no stage flags; never means a normal reading
         finally:
             if len(self.client.logs) > log_count:
