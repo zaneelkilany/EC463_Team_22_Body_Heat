@@ -142,7 +142,7 @@
     if (t.hub_analysis) {
       const a = t.hub_analysis, box = el("div", "hub-analysis");
       box.appendChild(el("b", "", a.label));
-      if (a.flag) box.appendChild(el("div", "", `${a.flag.kind}: ${a.flag.message}`));
+      if (a.flag) box.appendChild(el("div", "", `Latest flag (t=${a.flag.t}): ${a.flag.kind}: ${a.flag.message}`));
       else box.appendChild(el("div", "", a.status));
       if (a.notice) box.appendChild(el("div", "analysis-notice", `Latest notice (t=${a.notice.t}): ${a.notice.kind}: ${a.notice.message}`));
       d.appendChild(box);
