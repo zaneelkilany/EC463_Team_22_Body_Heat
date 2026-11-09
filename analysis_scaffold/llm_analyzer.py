@@ -24,7 +24,7 @@ from .deterministic_analyzer import (
 
 PROVIDER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
-MODEL_CANDIDATE = "qwen/qwen3.5-9b"  # user's candidate; route must be confirmed before real use
+MODEL_CANDIDATE = "qwen/qwen3.5-9b"  # candidate route must be confirmed before real use
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
 SCORE_EVERY_S = 0  # score each new broadcast packet per wearer, including rebroadcasts
 # implementation assumption by the coding agent, review and adjust before defending in the logbook
