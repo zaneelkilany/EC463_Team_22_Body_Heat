@@ -328,3 +328,15 @@ def test_cooldown_waits_for_next_cadence_slot():
     assert client.calls == 1
     analyzer.ingest(packet(90), 90)
     assert client.calls == 2
+
+
+def test_rebroadcast_does_not_call_even_when_cadence_is_due():
+    analyzer = model.LLMAnalyzer(variant="rolling")
+    original = packet(0)
+    analyzer.ingest(original, 0)
+    for t in range(1, 61):
+        analyzer.ingest(dict(original), t)
+    assert analyzer.client.calls == 1
+    assert analyzer.windows.last["pod-11"] == 60
+    analyzer.ingest(packet(61), 61)
+    assert analyzer.client.calls == 2
