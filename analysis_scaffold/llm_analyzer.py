@@ -1,0 +1,219 @@
+"""Model-involved alternatives with an offline fake and opt-in urllib client.
+
+INPUT: device_id only (never wearer names), window_s, readings newest last with
+{t, skin_c, slope_c_per_5min, battery_pct, skin_contact}, and team_settings
+{trend_c_per_5min, absolute_c}. OUTPUT: flag (bool), kind (none|trend|
+above_limit|resume), reason (<=240 characters, C-05), evidence
+{latest_skin_c, slope_c_per_5min}. Every response is validated.
+Timeout, HTTP, parsing, or schema failures become analysis unavailable events,
+never normal readings. Wall-clock call latency and simulated t stay separate.
+
+Fake results establish software plumbing only: nothing about Qwen/model
+effectiveness, real token usage, latency, or cost. Real comparison is untested.
+"""
+import json
+import os
+import time
+import urllib.request
+
+from .analyzer import Analyzer, Flag
+from .deterministic_analyzer import (
+    DeterministicAnalyzer, ReadingWindows, Transitions, WINDOW_S, RECOVERY_S,
+    MAX_GAP_S, MESSAGES, finite_number, reading_kind,
+)
+
+PROVIDER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+MODEL_CANDIDATE = "qwen/qwen3.5-9b"  # user's candidate; route must be confirmed before real use
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+SCORE_EVERY_S = 0  # score each new broadcast packet per wearer, including rebroadcasts
+# implementation assumption by the coding agent, review and adjust before defending in the logbook
+TIMEOUT_S = 30
+VARIANT = "explain"
+
+# Constrain explanations to reviewed C-05 templates rather than exposing arbitrary
+# provider prose to staff. The model selects an explanation from window evidence.
+REASONS = dict(MESSAGES, none="Readings are below the team-set limits.")
+OUTPUT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["flag", "kind", "reason", "evidence"],
+    "properties": {
+        "flag": {"type": "boolean"},
+        "kind": {"type": "string", "enum": list(REASONS)},
+        "reason": {"type": "string", "maxLength": 240, "enum": list(REASONS.values())},
+        "evidence": {"type": "object", "additionalProperties": False,
+                     "required": ["latest_skin_c", "slope_c_per_5min"],
+                     "properties": {"latest_skin_c": {"type": "number"},
+                                    "slope_c_per_5min": {"type": "number"}}},
+    },
+}
+
+
+def validate_response(response):
+    if isinstance(response, str):
+        response = json.loads(response)
+    if type(response) is not dict or set(response) != {"flag", "kind", "reason", "evidence"}:
+        raise ValueError("response keys")
+    kind = response["kind"]
+    if type(kind) is not str or kind not in REASONS:
+        raise ValueError("response kind")
+    if type(response["flag"]) is not bool or response["flag"] != (kind != "none"):
+        raise ValueError("response flag/kind mismatch")
+    if type(response["reason"]) is not str or response["reason"] != REASONS[kind]:
+        raise ValueError("response reason outside reviewed C-05 vocabulary")
+    evidence = response["evidence"]
+    if type(evidence) is not dict or set(evidence) != {"latest_skin_c", "slope_c_per_5min"}:
+        raise ValueError("response evidence")
+    if not all(finite_number(v) for v in evidence.values()):
+        raise ValueError("response evidence numbers")
+    return response
+
+
+class LLMClient:
+    """Explicit opt-in real client. API key comes only from environment.
+
+    Usage fields are provider-reported counts; absent usage stays unknown.
+    No automatic retries or fallback to a fake response.
+    """
+    fake = False
+
+    def __init__(self, model=MODEL_CANDIDATE, timeout_s=TIMEOUT_S):
+        self.api_key = os.environ.get("OPENROUTER_API_KEY")
+        self.model = model
+        self.timeout_s = timeout_s
+        self.calls = self.failures = 0
+        self.prompt_tokens = self.completion_tokens = None
+        self.logs = []
+
+    def _request(self, window):
+        if not self.api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is required for explicit real mode")
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": (
+                    "Score the supplied readings against team_settings. Use only device IDs. "
+                    "Select the matching reviewed reason template in the schema. "
+                    "Off-skin readings must not produce temperature flags. "
+                    "Never name conditions, call a value abnormal, or direct clinical action.")},
+                {"role": "user", "content": json.dumps(window, allow_nan=False)},
+            ],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "analysis_result", "strict": True, "schema": OUTPUT_SCHEMA}},
+        }
+        request = urllib.request.Request(
+            PROVIDER_BASE_URL, data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            envelope = json.load(response)
+        usage = envelope.get("usage") or {}
+        counts = []
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = usage.get(key)
+            counts.append(value if type(value) is int and value >= 0 else None)
+        return envelope["choices"][0]["message"]["content"], *counts
+
+    def complete(self, window):
+        self.calls += 1
+        started = time.perf_counter()
+        log = {"t": window["readings"][-1]["t"], "device_id": window["device_id"],
+               "prompt_tokens": None, "completion_tokens": None, "status": "analysis unavailable"}
+        try:
+            raw, prompt, completion = self._request(window)
+            log.update(prompt_tokens=prompt, completion_tokens=completion)
+            result = validate_response(raw)
+            log["status"] = "validated"
+            return result
+        except Exception:
+            self.failures += 1
+            raise
+        finally:
+            log["latency_s"] = time.perf_counter() - started
+            self.logs.append(log)
+            for field in ("prompt_tokens", "completion_tokens"):
+                value = log[field]
+                total = getattr(self, field)
+                if self.calls == 1:
+                    setattr(self, field, value)
+                else:
+                    setattr(self, field, total + value if total is not None and value is not None else None)
+
+
+class FakeLLMClient(LLMClient):
+    """Rule-derived contract fixture, NOT a model or model-performance estimate.
+
+    Tokens are unavailable (None); latency measures local fake plumbing only.
+    """
+    fake = True
+
+    def __init__(self):
+        super().__init__()
+        self.api_key = None
+
+    def _request(self, window):
+        latest = window["readings"][-1]
+        kind = reading_kind(latest, window["team_settings"])
+        return {"flag": kind != "none", "kind": kind, "reason": REASONS[kind],
+                "evidence": {"latest_skin_c": latest["skin_c"],
+                             "slope_c_per_5min": latest["slope_c_per_5min"]}}, None, None
+
+
+class LLMAnalyzer(Analyzer):
+    """This branch's model variant; default client is always offline."""
+    def __init__(self, client=None, window_s=WINDOW_S, recovery_s=RECOVERY_S,
+                 score_every_s=SCORE_EVERY_S):
+        if score_every_s < 0:
+            raise ValueError("score_every_s must be nonnegative")
+        self.client = client if client is not None else FakeLLMClient()
+        self.window_s = window_s
+        self.score_every_s = score_every_s
+        self.windows = ReadingWindows(window_s)
+        self.stage = DeterministicAnalyzer(window_s, recovery_s)
+        self.transitions = Transitions(recovery_s)
+        self.last_score = {}
+        self.events = []
+        self.name = f"llm-{VARIANT} ({'FAKE offline plumbing only' if self.client.fake else 'real provider'})"
+
+    def ingest(self, pkt, t):
+        dev = pkt["device_id"]
+        previous = self.windows.last.get(dev)
+        if pkt.get("skin_contact") is not True or (previous is not None and t - previous > MAX_GAP_S):
+            self.transitions.reset(dev)
+            self.last_score.pop(dev, None)
+        window = self.windows.add(pkt, t)
+        stage_flags = self.stage.ingest(pkt, t) if VARIANT == "explain" else []
+        if not window or not window["readings"]:
+            return []
+        if VARIANT == "explain" and not stage_flags:
+            return []
+        if VARIANT == "rolling" and t - self.last_score.get(dev, -float("inf")) < self.score_every_s:
+            return []
+        self.last_score[dev] = t
+        log_count = len(self.client.logs)
+        try:
+            result = validate_response(self.client.complete(window))
+            latest = window["readings"][-1]
+            evidence = result["evidence"]
+            if (evidence["latest_skin_c"] != latest["skin_c"] or
+                    evidence["slope_c_per_5min"] != latest["slope_c_per_5min"]):
+                raise ValueError("response evidence does not match supplied readings")
+            if VARIANT == "explain":
+                # Deterministic flags remain authoritative even if explanation fails.
+                event = stage_flags[0].kind
+                if result["kind"] not in (("none", "resume") if event == "resume" else (event,)):
+                    raise ValueError("explanation contradicts deterministic event")
+                reason = MESSAGES["resume"] if event == "resume" else result["reason"]
+                return [Flag(t, dev, event, reason)]
+            kind = "none" if result["kind"] == "resume" else result["kind"]
+            event = self.transitions.update(dev, kind, t)
+            return [Flag(t, dev, event, REASONS[event])] if event else []
+        except Exception as exc:
+            # Keep exception type only: provider text may contain sensitive material.
+            self.events.append({"t": t, "device_id": dev, "kind": "analysis unavailable",
+                                "message": "analysis unavailable", "error_type": type(exc).__name__})
+            self.transitions.below_since.pop(dev, None)
+            return stage_flags  # direct scoring has no stage flags; never means a normal reading
+        finally:
+            if len(self.client.logs) > log_count:
+                self.client.logs[-1]["session_t"] = t
