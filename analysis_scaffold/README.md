@@ -2,17 +2,24 @@
 
 This package records one synthetic scenario and replays identical packets through
 an independent deterministic baseline, the existing pod-alert relay comparator,
-and this branch's model-involved alternative. The relay is not ground truth:
+and both runtime-selectable model alternatives. The relay is not ground truth:
 expectations come from scripted scenario labels.
 
-Two branches share identical `record.py`, `analyzer.py`, `replay.py`,
-`expectations.py`, `README.md`, and `__init__.py`:
+All three branches have the same code capability:
 
-- `analysis-det-flag-llm-explain`: deterministic rules produce flags; a model
-  selects a staff-facing explanation for each flag. Deterministic flags remain
-  available if explanation fails, alongside an `analysis unavailable` event.
-- `analysis-rolling-window-llm`: the model scores each wearer's rolling window.
-  Repeated active kinds are suppressed; recovery produces a resume event.
+- `analysis-det-flag-llm-explain`: convenience default `explain`; deterministic
+  flags remain available even when model explanation is unavailable.
+- `analysis-rolling-window-llm`: convenience default `rolling`; the model scores
+  windows on bounded cadence, subject to explicit call budgets.
+- `analysis-compare`: cohesive deliverable, default `rolling`, containing both
+  alternatives. No `VARIANT` module constant exists on any branch.
+
+`LLMAnalyzer(variant="explain"|"rolling")` and replay's `--variant` select the
+alternative at runtime. `DEFAULT_MODE` in `__init__.py` is only a documented
+convenience default for `--analyzer llm` and constructors without a variant;
+it does not remove either code path. The experiment branches differ only in
+this per-alternative default, not code capability. All other package files,
+including this README, are identical across branches.
 
 **All tests and verification use the deterministic `FakeLLMClient` offline. These
 results establish software plumbing only (the harness runs, contracts validate,
@@ -23,7 +30,7 @@ agreement is expected and is not independent evidence of analysis quality.
 
 ## Recording prerequisite and running
 
-Both alternatives are based on this fork's `demo-prototype` branch (`c15a72c`),
+All three branches are based on this fork's `demo-prototype` branch (`c15a72c`),
 which supplies `body_heat_demo.engine.Engine`, the 200-second scripted scenario,
 and the 29-test existing suite. Application code and existing tests are unchanged.
 
@@ -33,20 +40,23 @@ From the repository root:
 python3 -m analysis_scaffold.record
 python3 -m analysis_scaffold.replay --analyzer relay analysis_scaffold/recordings/session_default.jsonl
 python3 -m analysis_scaffold.replay --analyzer deterministic analysis_scaffold/recordings/session_default.jsonl
-python3 -m analysis_scaffold.replay --analyzer llm analysis_scaffold/recordings/session_default.jsonl
+python3 -m analysis_scaffold.replay --analyzer llm --variant explain analysis_scaffold/recordings/session_default.jsonl
+python3 -m analysis_scaffold.replay --analyzer llm --variant rolling analysis_scaffold/recordings/session_default.jsonl
 python3 -m analysis_scaffold.replay --analyzer all --call-log work/calls.jsonl analysis_scaffold/recordings/session_default.jsonl
 python3 -m pytest tests/ -q
 python3 -m pytest analysis_scaffold/tests/ -q
 ```
 
-`all` runs the relay, deterministic baseline, and the branch's LLM variant on the
-same loaded recording. It prints every flag, positive/negative scoring, first
+`all` always runs four distinct paths: relay, deterministic, llm-explain, and
+llm-rolling on the same loaded recording, regardless of the default or --variant. It prints every flag, positive/negative scoring, first
 rise flag time, delay from t=15, missed events, and model call counters. A failed
-expectation or unavailable analysis causes a nonzero replay exit code. `null`
+expectation, unavailable analysis, or exhausted budget causes a nonzero replay
+exit code. This deliberately exposes degraded coverage instead of hiding it. `null`
 token counts mean unknown, never zero measured tokens. Fake latency is measured
 local execution time only. `--call-log` writes per-call measurement time `t`,
 simulated broadcast `session_t`, wall-clock `latency_s`, nullable token counts,
-and validation status. Failures are printed separately and counted. Recordings
+and validation status. Logs also identify the runtime variant. Failure, budget,
+and deferred-explanation events are printed separately and counted. Recordings
 are regenerable and must not be committed. Tests require the existing pytest
 test runner; package runtime uses only stdlib, with no new project dependencies.
 
@@ -71,7 +81,11 @@ and adjust before defending in the logbook**:
 | `MIN_SPAN_S` | 40 s | Avoid amplifying single short noise differences |
 | `RECOVERY_S` | 10 s | Require a period below both settings before resume |
 | `MAX_GAP_S` | 20 s | Reset sample/recovery history after a stream gap |
-| `SCORE_EVERY_S` | 0 | Score every new broadcast per wearer, including rebroadcasts |
+| `SCORE_EVERY_S` | 30 s | Minimum interval between attempts per wearer |
+| `MAX_CALLS_PER_WEARER` | 7 | Lifetime attempt cap per wearer within an analyzer session |
+| `MAX_CALLS_SESSION` | 40 | Hard total cap per analyzer session, including failed attempts |
+| `FAIL_COOLDOWN_S` | 60 s | After failure, wait for the first cadence slot at/after cooldown |
+| `DEFAULT_MODE` | explain or rolling | Branch convenience preset only; runtime override is supported |
 | `RISE_LATEST_S` | 100 | Allow 85 s from the labeled rise, including warmup and sampling |
 | `ABSOLUTE_LATEST_S` | 150 | Expect absolute-limit detection before the plateau |
 | `RESUME_LATEST_S` | 200 | Allow 30 s after the labeled plateau, including recovery |
@@ -83,6 +97,53 @@ recording protocol. Pass lines are provisional agent assumptions, not validated
 requirements or proven effectiveness. They were exercised against the existing
 demo engine, but still require human review. Negative windows remain pod-07 t=40..110, pod-18 t=0..200, and pod-24
 t=10..200. Pod `absolute` is normalized to `above_limit` for scoring only.
+
+## Bounded compute and measured coverage tradeoff
+
+Every packet still updates the window. Off-cadence packets and rebroadcasts do
+not trigger model calls. Attempts, including failures, consume both budgets.
+Cadence, budgets, and cooldown are maintained per analyzer instance and never
+reset on detach, reattach, or a stream gap. Reuse one instance for one session;
+construct a new instance to start a new session. `all` gives each variant its own
+independent budget, so one alternative cannot consume the other's allocation.
+
+Explain attempts occur only when the deterministic stage emits a flag. A flag
+blocked by cadence or cooldown is retained with reviewed deterministic wording
+and a visible `model_deferred` event; there is no queued explanation or automatic
+retry. Rolling attempts occur at the first eligible new packet, at least 30
+session seconds after the preceding attempt. On failure, eligibility moves to
+the first cadence slot at/after the cooldown expires (e.g. failure at t=0 with
+61s cooldown and 30s cadence permits the next attempt at t=90). No retries occur
+within a call. Calls are synchronous, so there are no concurrent requests or
+unbounded pending queues.
+
+The first attempted call beyond a cap emits `budget_exhausted`, with `scope`
+`wearer` or `session`. The notice is latched once per exhausted scope, not spammed
+on every packet; its restriction persists. Absence of model output is thus
+visible, never a fabricated normal result. Explain retains deterministic flags
+when capped. Rolling cannot produce fresh model flags after its cap. Allocation
+is first eligible packet order, **not a fairness or clinical prioritization
+policy**. Cooldown/budget guards apply equally to both variants.
+
+CLI overrides are `--score-every-s`, `--max-calls-per-wearer`,
+`--max-calls-session`, and `--fail-cooldown-s`; constructor parameters have the
+corresponding underscore names. All accept nonnegative integers; zero cadence
+is an explicit opt-out for isolated tests, zero budget disables calls visibly.
+A call budget bounds attempts, not token count or financial cost per call.
+
+Final offline verification on each branch recorded 5,813 packets and passed 29
+existing plus 52 package tests (81 total), with all package files parsing.
+With defaults, a full 200s rolling replay makes **at most 40 calls; measured 40**.
+Explain measured 3 calls; four-path replay therefore measured 43 fake calls total.
+Rolling exhausts the session budget at t=30 and misses all three positive
+expectations. The relay and deterministic baseline remain unchanged, and explain
+passes all positives. All three negative windows pass for every analyzer.
+Default `all` exits 1 to expose rolling's three misses and one exhausted-budget
+event; tests and AST parsing exit 0. Pass lines were not relaxed to conceal the
+tradeoff. Exact per-branch output, including measured local fake execution time,
+is pasted in the three PR descriptions. These numbers establish software
+plumbing only; real Qwen effectiveness, token usage, latency, and cost remain
+untested until an API key is supplied and real calls are explicitly enabled.
 
 ## Model contracts, privacy, and failure semantics
 
