@@ -56,3 +56,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+# Regenerable analysis inputs
+analysis_scaffold/recordings/*.jsonl
