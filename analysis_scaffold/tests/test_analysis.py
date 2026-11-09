@@ -151,7 +151,7 @@ def test_score_counts_events_and_negative_windows(capsys):
              Flag(180, "pod-11", "resume", "")]
     summary = score(flags)
     assert summary == {"first_rise_t": 60, "time_to_first_flag_s": 45,
-                       "missed_expected_events": 0, "flags_in_negative_windows": 0}
+                       "missed_expected_events": 0, "flags_in_negative_windows": 0, "scoring_status": "complete"}
     assert "PASS" in capsys.readouterr().out
     assert score(flags + [Flag(50, "pod-07", "trend", "")])["flags_in_negative_windows"] == 1
 
@@ -384,3 +384,34 @@ def test_demo_defaults_complete_all_paths_without_exhaustion(capsys):
         if isinstance(analyzer, model.LLMAnalyzer):
             assert not analyzer.events
             assert analyzer.client.calls <= model.MAX_CALLS_SESSION
+
+
+def test_live_safety_ceiling_overrides_larger_budgets_without_network():
+    client = model.LLMClient()
+    client.calls = model.LIVE_SAFETY_CEILING
+    analyzer = model.LLMAnalyzer(client, variant="rolling", max_calls_session=100000,
+                                 max_calls_per_wearer=100000)
+    assert analyzer.ingest(packet(0), 0) == []
+    assert analyzer.events[0]["kind"] == "budget_exhausted"
+    assert analyzer.events[0]["scope"] == "live_safety"
+    with pytest.raises(RuntimeError, match="safety ceiling"):
+        client.complete(ReadingWindows().add(packet(0), 0))
+    assert client.calls == model.LIVE_SAFETY_CEILING
+
+
+def test_session_allocation_is_first_come_and_late_wearers_are_visible():
+    analyzer = model.LLMAnalyzer(variant="rolling", max_calls_session=2)
+    for dev in ("pod-03", "pod-07", "pod-11"):
+        analyzer.ingest(packet(0, dev=dev), 0)
+    assert analyzer.calls_by_wearer == {"pod-03": 1, "pod-07": 1}
+    assert analyzer.events[0]["device_id"] == "pod-11"
+    assert analyzer.events[0]["scope"] == "session"
+
+
+@pytest.mark.parametrize("kind", ["budget_exhausted", "analysis unavailable"])
+def test_unavailable_outputs_are_not_scored_as_normal(kind, capsys):
+    events = [{"t": 30, "device_id": "pod-07", "kind": kind, "scope": "session"}]
+    result = score([], events)
+    assert result["scoring_status"] == "incomplete"
+    assert result["missed_expected_events"] == 3
+    assert "INCOMPLETE" in capsys.readouterr().out
