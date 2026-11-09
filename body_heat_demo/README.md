@@ -99,3 +99,52 @@ network or stop the server to see the "Connection lost" banner (AC-F9).
 - A non-consenting wearer shows "Not collecting" instead of "No signal",
   even though Table F2 ranks no-signal higher. Nothing is collected from
   them, so no-signal would be misleading. Confirm with Krista (F owner).
+
+## Integrated live hub analysis
+
+Run from the repository root:
+
+```sh
+python3 -m body_heat_demo.server --analyzer deterministic --port 8463
+# Also available: --analyzer relay | llm-explain | llm-rolling
+# Optional presenter-only start: --no-autoplay
+```
+
+Every hub-accepted packet is passed to the selected `analysis_scaffold` analyzer
+with the same session second, including rebroadcasts. Rejected packets never
+reach analysis; the scaffold handles its own measurement deduplication. Seeded
+chart history is not live input. The default `deterministic` choice is local,
+zero-cost and requires no key. `relay` runs the pod comparator and preserves the
+prior view payload/display. `llm-explain` uses deterministic flags with model
+explanations; `llm-rolling` scores rolling windows. Both use `FakeLLMClient`
+offline by default, even if a key is present. Real calls require the explicit
+`--real-provider` flag with an LLM choice and `OPENROUTER_API_KEY` in the environment;
+this reuses the scaffold's existing bounded provider path.
+
+Staff roster cards and staff detail cards show a separate dashed **Hub analysis**
+section beside the existing pod status. It shows the latest flag kind and the
+analyzer's exact reviewed C-05 wording, including `resume`. This is a latest-event
+display, not a new OK decision or a replacement for pod alerts. Before a flag it
+says “Awaiting analysis output”. Analysis notices include their event time and
+remain visible as the latest coverage notice: `analysis unavailable`,
+`budget_exhausted`, or `model_deferred`. Session-wide budget exhaustion is shown
+for every consenting wearer. A notice never becomes an OK result. No analysis
+fields are sent in athlete detail JSON or athlete SSE. Non-consenting wearers
+have no analysis section. Consent withdrawal stops future analyzer ingestion.
+
+Standing labels: **implementation assumptions by the coding agent**;
+**bounded-call offline-verified**; **real model untested**. Thresholds are
+**team demo settings, not validated health thresholds**. Fake outputs verify
+software wiring only, not model effectiveness, real token usage, latency or cost.
+The live app retains the scaffold's cadence, budgets, recovery windows and
+reviewed wording unchanged. Real calls are synchronous in the engine ingest
+path and can delay demo ticks until the existing provider timeout; offline mode
+is the verified presentation path.
+
+Offline checks:
+
+```sh
+python3 -m pytest tests/ analysis_scaffold/tests/ -q
+python3 -m analysis_scaffold.record
+python3 -m analysis_scaffold.replay analysis_scaffold/recordings/session_default.jsonl --analyzer all
+```

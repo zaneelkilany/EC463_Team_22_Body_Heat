@@ -108,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
                 for sig, at, val, valid in hist:
                     series.setdefault(sig, []).append([at, val])
                 evs = [e for e in store.events(device_id=dev, kinds=["alert", "alert_clear", "ack", "no_signal", "contact", "consent"], limit=100)]
-                tile = views.build_tile(hub, m, t)
+                tile = views.build_tile(hub, m, t, staff=user["role"] == "staff")
                 if user["role"] == "athlete":
                     tile["skin_c"] = (hub.state(dev).reading or {}).get("skin_c")   # own data: not hidden
                 return self._json({"tile": tile, "series": series, "events": evs, "t": t,
@@ -208,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
                 t = eng.t
                 if t != last_t:
                     last_t = t
-                    tiles = views.build_roster(hub, own, t)
+                    tiles = views.build_roster(hub, own, t, staff=user["role"] == "staff")
                     if user["role"] == "athlete":
                         for tile in tiles:   # own data is never hidden from its owner
                             tile["skin_c"] = (hub.state(tile["device_id"]).reading or {}).get("skin_c")
@@ -240,8 +240,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8463)
     ap.add_argument("--no-autoplay", action="store_true", help="do not run the scripted scenario; presenter triggers everything")
+    ap.add_argument("--analyzer", choices=["relay", "deterministic", "llm-explain", "llm-rolling"], default="deterministic")
+    ap.add_argument("--real-provider", action="store_true", help="Explicit real provider opt-in; requires OPENROUTER_API_KEY")
     args = ap.parse_args(argv)
-    store, hub, accounts, roster, engine = build_demo(autoplay=not args.no_autoplay)
+    if args.real_provider and not args.analyzer.startswith("llm-"):
+        ap.error("--real-provider requires an llm analyzer")
+    store, hub, accounts, roster, engine = build_demo(autoplay=not args.no_autoplay, analyzer=args.analyzer, real_provider=args.real_provider)
     STATE.update(store=store, hub=hub, accounts=accounts, roster=roster, engine=engine)
     engine.start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

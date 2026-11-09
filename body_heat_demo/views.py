@@ -134,7 +134,7 @@ def trend_arrow(slope_c_per_5min):
     return "→"
 
 
-def build_tile(hub, member, t):
+def build_tile(hub, member, t, *, staff=True):
     dev = member["device_id"]
     state = hub.state(dev)
     primary = primary_state(hub, dev, t)
@@ -156,7 +156,7 @@ def build_tile(hub, member, t):
     age = hub.reading_age_s(dev, t)
     m_age = hub.measurement_age_s(dev, t)
     reading = state.reading or {}
-    return {
+    tile = {
         "device_id": dev,
         "jersey": member["jersey"],
         "name": member["name"],
@@ -174,10 +174,19 @@ def build_tile(hub, member, t):
         "alerts_only": dev in hub.alerts_only,
     }
 
+    if staff and getattr(hub, "analysis_enabled", hub.analyzer is not None) and hub.is_consented(dev):
+        tile["hub_analysis"] = {
+            "label": "Hub analysis",
+            "flag": hub.analysis_flags.get(dev),
+            "notice": hub.analysis_notices.get(dev),
+            "status": "Awaiting analysis output" if dev not in hub.analysis_flags else "Latest analysis flag",
+        }
+    return tile
 
-def build_roster(hub, roster, t):
+
+def build_roster(hub, roster, t, *, staff=True):
     """Fixed grid in jersey order; tiles never move (AC-F1)."""
-    return [build_tile(hub, m, t) for m in sorted(roster, key=lambda m: m["jersey"])]
+    return [build_tile(hub, m, t, staff=staff) for m in sorted(roster, key=lambda m: m["jersey"])]
 
 
 def build_alert_strip(hub, roster, t):

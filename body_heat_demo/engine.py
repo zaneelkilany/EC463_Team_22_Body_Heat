@@ -268,14 +268,17 @@ class Engine:
         return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.session_started + t))
 
 
-def build_demo(autoplay=True, seed_history=True):
+def build_demo(autoplay=True, seed_history=True, analyzer="deterministic", real_provider=False):
     """Wire store + hub + accounts + engine with the fake roster."""
     from .auth import Accounts
     from .hub import DemoHub
     from .store import Store
 
     store = Store()
-    hub = DemoHub(store, SESSION_ID)
+    from analysis_scaffold.replay import build_analyzer
+    selected = build_analyzer(analyzer, real=real_provider)
+    hub = DemoHub(store, SESSION_ID, analyzer=selected)
+    hub.analysis_enabled = analyzer != "relay"
     roster = demo_roster()
     accounts = Accounts()
     accounts.add("k.smith", "demo", "staff", "Krista Smith (athletic trainer)")
