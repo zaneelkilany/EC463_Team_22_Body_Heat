@@ -101,7 +101,8 @@ t=10..200. Pod `absolute` is normalized to `above_limit` for scoring only.
 ## Bounded compute and measured coverage tradeoff
 
 Every packet still updates the window. Off-cadence packets and rebroadcasts do
-not trigger model calls. Attempts, including failures, consume both budgets.
+not trigger model calls, even if a repeated measurement ID arrives after the
+cadence interval expires. Attempts, including failures, consume both budgets.
 Cadence, budgets, and cooldown are maintained per analyzer instance and never
 reset on detach, reattach, or a stream gap. Reuse one instance for one session;
 construct a new instance to start a new session. `all` gives each variant its own
@@ -132,7 +133,7 @@ is an explicit opt-out for isolated tests, zero budget disables calls visibly.
 A call budget bounds attempts, not token count or financial cost per call.
 
 Final offline verification on each branch recorded 5,813 packets and passed 29
-existing plus 52 package tests (81 total), with all package files parsing.
+existing plus 53 package tests (82 total), with all package files parsing.
 With defaults, a full 200s rolling replay makes **at most 40 calls; measured 40**.
 Explain measured 3 calls; four-path replay therefore measured 43 fake calls total.
 Rolling exhausts the session budget at t=30 and misses all three positive

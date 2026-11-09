@@ -200,6 +200,8 @@ class LLMAnalyzer(Analyzer):
     def ingest(self, pkt, t):
         dev = pkt["device_id"]
         previous = self.windows.last.get(dev)
+        mid = pkt.get("measurement_id")
+        rebroadcast = mid is not None and mid == self.windows.ids.get(dev)
         if pkt.get("skin_contact") is not True or (previous is not None and t - previous > MAX_GAP_S):
             self.transitions.reset(dev)
             # Contact changes and gaps never reset cadence, cooldown, or budgets.
@@ -209,7 +211,12 @@ class LLMAnalyzer(Analyzer):
             return []
         if self.variant == "explain" and not stage_flags:
             return []
-        # No calls on rebroadcasts between cadence ticks; windows still update.
+        if rebroadcast:
+            if stage_flags:
+                self.events.append({"t": t, "device_id": dev, "kind": "model_deferred",
+                                    "message": "Model explanation unavailable without a new measurement."})
+            return stage_flags
+        # No calls between cadence slots; windows still update.
         last = self.last_score.get(dev)
         due = -float("inf") if last is None else last + self.score_every_s
         cooldown = self.cooldown_until.get(dev, -float("inf"))
