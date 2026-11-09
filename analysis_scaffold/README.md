@@ -82,8 +82,10 @@ and adjust before defending in the logbook**:
 | `RECOVERY_S` | 10 s | Require a period below both settings before resume |
 | `MAX_GAP_S` | 20 s | Reset sample/recovery history after a stream gap |
 | `SCORE_EVERY_S` | 30 s | Minimum interval between attempts per wearer |
-| `MAX_CALLS_PER_WEARER` | 8 | Seven cadence opportunities over 200s plus one headroom slot |
-| `MAX_CALLS_SESSION` | 240 | 30 scenario wearers multiplied by 8 attempts, including headroom |
+| `BUDGET_HEADROOM_TICKS` | 1 | One extra cadence opportunity per wearer |
+| `MAX_CALLS_PER_WEARER` | 8 | `ceil(200 / 30) + BUDGET_HEADROOM_TICKS` |
+| `MAX_CALLS_SESSION` | 240 | `SCENARIO_WEARER_COUNT * MAX_CALLS_PER_WEARER` |
+| `LIVE_SAFETY_CEILING` | 300 | Separate hard ceiling for real-provider attempts; no CLI override |
 | `FAIL_COOLDOWN_S` | 60 s | After failure, wait for the first cadence slot at/after cooldown |
 | `DEFAULT_MODE` | explain or rolling | Branch convenience preset only; runtime override is supported |
 | `RISE_LATEST_S` | 100 | Allow 85 s from the labeled rise, including warmup and sampling |
@@ -123,26 +125,37 @@ The first attempted call beyond a cap emits `budget_exhausted`, with `scope`
 on every packet; its restriction persists. Absence of model output is thus
 visible, never a fabricated normal result. Explain retains deterministic flags
 when capped. Rolling cannot produce fresh model flags after its cap. Allocation
-is first eligible packet order, **not a fairness or clinical prioritization
-policy**. Cooldown/budget guards apply equally to both variants.
+is first eligible packet order: when the session cap binds, later wearers can
+lose analysis opportunities. This is **not fair scheduling or clinical
+prioritization**; cross-wearer exhaustion is explicitly tested and measured below. Cooldown/budget guards apply equally to both variants.
 
 CLI overrides are `--score-every-s`, `--max-calls-per-wearer`,
 `--max-calls-session`, and `--fail-cooldown-s`; constructor parameters have the
 corresponding underscore names. All accept nonnegative integers; zero cadence
 is an explicit opt-out for isolated tests, zero budget disables calls visibly.
 A call budget bounds attempts, not token count or financial cost per call.
+The separate `LIVE_SAFETY_CEILING=300` limits actual provider attempts even if
+cadence or ordinary budgets are overridden or edited upward. Both the analyzer
+and real client enforce it; exhaustion is visible with `scope=live_safety`, and
+direct client use raises rather than making another request. The ceiling is an
+**implementation assumption by the coding agent, review and adjust before
+defending in the logbook**, independent of the scenario-derived defaults.
+This is **bounded-call, offline-verified** software only. Real dollar cost is
+unresolved until the model route and token usage are tested with a real key;
+the rolling variant is not proven cheap.
 
 Budget sizing is an **implementation assumption by the coding agent, review
 and adjust before defending in the logbook**: the scenario has 30 wearers and
 200 session seconds. At 30s cadence there are `ceil(200 / 30) = 7` opportunities
 per wearer. One extra slot gives a per-wearer cap of 8; `30 * 8 = 240` gives the
-session cap. This intentionally prioritizes full demo coverage over the earlier
+session cap. These defaults are derived in code from scenario facts and cadence,
+not fitted to expected detection times. This intentionally prioritizes full demo coverage over the earlier
 sub-50-call exploration target. Smaller limits can still be selected through the
 CLI and are covered by exhaustion tests. Budgets are finite guardrails, not a
 claim that real token/compute cost is acceptable.
 
 Final offline verification on each branch recorded 5,813 packets and passed 29
-existing plus 56 package tests (85 total), with all package files parsing.
+existing plus 60 package tests (89 total), with all package files parsing.
 With defaults, a full 200s rolling replay makes **at most 240 calls; measured
 202**. Explain measured 3 calls; four-path replay measured 205 fake calls total.
 All positive expectations and all three negative windows PASS for all four
@@ -156,6 +169,27 @@ measured local fake execution time, is pasted in the three PR descriptions.
 These numbers establish software plumbing only; real Qwen effectiveness, token
 usage, latency, and cost remain untested until an API key is supplied and real
 calls are explicitly enabled.
+
+### Measured aggressive-budget tradeoff
+
+A separate final run of `--analyzer all --max-calls-session 40` keeps the 30s
+cadence but limits each alternative to 40 attempts. Explain still makes 3 calls
+and passes its expectations. Rolling makes 40, exhausts at t=30 (first denied
+wearer: pod-13), and misses all three later positive events. First-come allocation
+therefore denies later wearers further scoring; even pod-11 only receives its
+t=0 and t=30 calls before exhaustion, before the positive detection window is
+reached. Unit tests explicitly show early wearers consuming a session cap and a
+later wearer receiving the visible exhaustion event. The strict run exits 1.
+This is the detection-versus-call tradeoff, not a normal/no-flag outcome.
+
+`budget_exhausted` and `analysis unavailable` remain separate event counters.
+Scoring reports `scoring_status=incomplete` if either occurs and marks affected
+negative windows INCOMPLETE instead of interpreting missing output as a normal
+reading. Missed expected flags remain counted, including the strict run's three
+misses. Only actual temperature flags are scored as detections; no unavailable
+event becomes a synthetic model `none`. The default run has complete coverage;
+the strict run has incomplete rolling coverage and no emitted negative-window
+temperature flags. Both runs' full output is pasted in each PR.
 
 ## Model contracts, privacy, and failure semantics
 

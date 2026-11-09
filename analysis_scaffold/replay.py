@@ -10,7 +10,7 @@ from .analyzer import PodRelayAnalyzer
 from .deterministic_analyzer import DeterministicAnalyzer
 from . import DEFAULT_MODE
 from .llm_analyzer import (LLMAnalyzer, FakeLLMClient, LLMClient, SCORE_EVERY_S,
-                           MAX_CALLS_PER_WEARER, MAX_CALLS_SESSION, FAIL_COOLDOWN_S)
+                           MAX_CALLS_PER_WEARER, MAX_CALLS_SESSION, FAIL_COOLDOWN_S, LIVE_SAFETY_CEILING)
 from . import expectations
 
 
@@ -43,7 +43,11 @@ def build_analyzer(name, real=False, variant=None, **limits):
     raise ValueError(f"unknown analyzer {name!r}")
 
 
-def score(flags):
+def score(flags, events=()):
+    unavailable = [e for e in events if e["kind"] in ("analysis unavailable", "budget_exhausted")]
+    incomplete = bool(unavailable)
+    if incomplete:
+        print("  scoring coverage: INCOMPLETE (unavailable model output is not a normal/no-flag result)")
     missed = negative = 0
     for label, dev, kind, t0, t1 in expectations.EXPECTED_FLAGS:
         # Normalize the pod comparator's absolute spelling only at scoring.
@@ -55,12 +59,16 @@ def score(flags):
         bad = [f for f in flags if f.device_id == dev and t0 <= f.t <= t1 and
                f.kind in ("trend", "above_limit", "absolute")]
         negative += len(bad)
-        print(f"  no temperature flags {dev} t={t0}..{t1}: {'PASS' if not bad else str(len(bad)) + ' unexpected'}")
+        unknown = any(e["t"] <= t1 and (e.get("scope") in ("session", "live_safety") or
+                      e["device_id"] == dev) for e in unavailable)
+        status = str(len(bad)) + " unexpected" if bad else "INCOMPLETE" if unknown else "PASS"
+        print(f"  no temperature flags {dev} t={t0}..{t1}: {status}")
     rise = [f.t for f in flags if f.device_id == "pod-11" and f.t >= 15 and
             f.kind in ("trend", "above_limit", "absolute")]
     return {"first_rise_t": min(rise) if rise else None,
             "time_to_first_flag_s": min(rise) - 15 if rise else None,
-            "missed_expected_events": missed, "flags_in_negative_windows": negative}
+            "missed_expected_events": missed, "flags_in_negative_windows": negative,
+            "scoring_status": "incomplete" if incomplete else "complete"}
 
 
 def main():
@@ -99,7 +107,7 @@ def main():
         print(f"\nanalyzer: {analyzer.name}\n{len(flags)} flag(s) raised")
         for flag in flags:
             print(f"  t={flag.t:4d} {flag.device_id} {flag.kind}: {flag.message}")
-        result = score(flags)
+        result = score(flags, getattr(analyzer, "events", ()))
         result["analyzer"] = name
         if isinstance(analyzer, LLMAnalyzer):
             client = analyzer.client
@@ -113,7 +121,8 @@ def main():
                           score_every_s=analyzer.score_every_s,
                           max_calls_per_wearer=analyzer.max_calls_per_wearer,
                           max_calls_session=analyzer.max_calls_session,
-                          fail_cooldown_s=analyzer.fail_cooldown_s)
+                          fail_cooldown_s=analyzer.fail_cooldown_s,
+                          live_safety_ceiling=LIVE_SAFETY_CEILING)
             logs.extend(dict(log, variant=analyzer.variant) for log in client.logs)
             for event in analyzer.events:
                 print(f"  t={event['t']} {event['device_id']}: {event['kind']} {event['message']}")
